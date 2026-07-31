@@ -65,6 +65,7 @@ User (browser chat)  ──►  /chat  ──►  Guardrail pre-check ──► 
 - Postgres + pgvector (`spring-ai-pgvector-store` starter)
 - Chat memory: JDBC-backed `ChatMemory` (survives restarts)
 - UI: single static HTML page hitting `/chat` over SSE. No frontend framework.
+- Spring Boot 3.5.16 + Spring AI 1.0.9. Chosen over the Boot 4 / Spring AI 2.0 pairing deliberately: this is a portfolio project where ecosystem maturity (docs, examples, troubleshooting) matters more than the newest API. 1.0.x has full RAG support (Advisor framework, VectorStore abstraction) and MCP via community starters — everything the plan needs. Boot 3.5 is past EOL (June 30, 2026), which is irrelevant for a local, non-exposed portfolio project. A production deployment would target Boot 4 / Spring AI 2.0; this migration path is noted in the README.
 
 ### Config externalization
 All RAG tuning knobs live in `application.yml`, never hardcoded: chunk size, chunk overlap, top-K, similarity threshold, embedding model name. "Tuning" must never mean "recompile."

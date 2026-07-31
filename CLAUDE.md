@@ -73,6 +73,13 @@ User (browser chat)  ──►  /chat  ──►  Guardrail pre-check ──► 
 ### Config externalization
 All RAG tuning knobs (chunk size, chunk overlap, top-K, similarity threshold, embedding model name) belong in `application.yml`, never hardcoded. "Tuning" must never mean "recompile."
 
+### Example routing scenarios
+See `PLAN.md` Section 6 for the full list. One per path, for calibration when building the router/guardrails (M4):
+- **RAG:** "What's our per-diem limit for international travel?"
+- **MCP:** "What's the current balance on my corporate card?"
+- **BOTH:** "I spent $340 on dinner last night — is that within policy?" (MCP fetches the transaction, RAG fetches the policy, generation combines them)
+- **DENY:** "What's [another tenant]'s total travel spend?" (cross-tenant — this is where tenancy and guardrails visibly connect)
+
 ## Ingestion design (the extensibility seam)
 
 **Entry point:** `IngestionService.ingest(tenantId, source)` — this signature is what keeps future flexibility; onboarding a tenant later means calling this with a new tenant + source, not writing new code.

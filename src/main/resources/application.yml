@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: agentic-rag-mcp-assistant
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: llama3.1
+      embedding:
+        options:
+          model: nomic-embed-text
