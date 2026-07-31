@@ -22,3 +22,20 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Secrets / local config
+.env
+*.env
+application-local.yml
+application-local.properties
+**/secrets/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+
+# Claude CLI local state (if any lands in-repo)
+.claude/
