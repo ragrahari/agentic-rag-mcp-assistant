@@ -1,6 +1,9 @@
 spring:
   application:
     name: agentic-rag-mcp-assistant
+  datasource:
+    url: jdbc:h2:file:./data/chatmemory
+    driver-class-name: org.h2.Driver
   ai:
     ollama:
       base-url: http://localhost:11434
@@ -10,3 +13,14 @@ spring:
       embedding:
         options:
           model: nomic-embed-text
+    chat:
+      memory:
+        repository:
+          jdbc:
+            # Spring AI 1.0.9 ships schema scripts for postgresql/mysql/sqlserver/hsqldb, not h2.
+            # The shipped postgresql script is plain ANSI SQL and works against H2 as-is.
+            platform: postgresql
+            # Default "embedded" mode doesn't detect this file-based H2 datasource as embedded,
+            # so schema init silently no-ops without this. The DDL is idempotent (CREATE ... IF
+            # NOT EXISTS), so re-running it on every startup is safe.
+            initialize-schema: always

@@ -13,6 +13,9 @@
 # Maven build output
 target/
 
+# Local H2 chat-memory database files
+data/
+
 # Package Files #
 *.jar
 *.war
