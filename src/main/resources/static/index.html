@@ -10,6 +10,7 @@
   .msg .role { font-weight: bold; }
   form { display: flex; gap: 0.5rem; }
   input[type=text] { flex: 1; padding: 0.5rem; font-size: 1rem; }
+  #tenant { flex: 0 0 8rem; }
   button { padding: 0.5rem 1rem; font-size: 1rem; }
 </style>
 </head>
@@ -17,6 +18,7 @@
 <h1>Agentic RAG + MCP Assistant</h1>
 <div id="log"></div>
 <form id="chat-form">
+  <input type="text" id="tenant" placeholder="Tenant" value="acme" autocomplete="off">
   <input type="text" id="message" placeholder="Ask something..." autocomplete="off" autofocus>
   <button type="submit">Send</button>
 </form>
@@ -26,6 +28,7 @@
   const log = document.getElementById('log');
   const form = document.getElementById('chat-form');
   const input = document.getElementById('message');
+  const tenantInput = document.getElementById('tenant');
 
   function appendMessage(role) {
     const div = document.createElement('div');
@@ -40,13 +43,13 @@
     return textSpan;
   }
 
-  async function sendMessage(message) {
-    appendMessage('You').textContent = message;
+  async function sendMessage(message, tenantId) {
+    appendMessage('You').textContent = `[${tenantId}] ${message}`;
     const responseSpan = appendMessage('Assistant');
 
     const res = await fetch('/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': tenantId },
       body: JSON.stringify({ message, conversationId })
     });
 
@@ -87,9 +90,10 @@
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const message = input.value.trim();
-    if (!message) return;
+    const tenantId = tenantInput.value.trim();
+    if (!message || !tenantId) return;
     input.value = '';
-    sendMessage(message);
+    sendMessage(message, tenantId);
   });
 </script>
 </body>

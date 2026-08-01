@@ -2,14 +2,17 @@ spring:
   application:
     name: agentic-rag-mcp-assistant
   datasource:
-    url: jdbc:h2:file:./data/chatmemory
-    driver-class-name: org.h2.Driver
+    # Postgres in Docker (see docker-compose.yml). Local dev-only credentials, not a real secret.
+    url: jdbc:postgresql://localhost:5432/ragdb
+    username: raguser
+    password: ragpass
+    driver-class-name: org.postgresql.Driver
   ai:
     ollama:
       base-url: http://localhost:11434
       chat:
         options:
-          model: llama3.1
+          model: llama3.1:8b
       embedding:
         options:
           model: nomic-embed-text
@@ -17,10 +20,21 @@ spring:
       memory:
         repository:
           jdbc:
-            # Spring AI 1.0.9 ships schema scripts for postgresql/mysql/sqlserver/hsqldb, not h2.
-            # The shipped postgresql script is plain ANSI SQL and works against H2 as-is.
-            platform: postgresql
-            # Default "embedded" mode doesn't detect this file-based H2 datasource as embedded,
-            # so schema init silently no-ops without this. The DDL is idempotent (CREATE ... IF
-            # NOT EXISTS), so re-running it on every startup is safe.
+            # "embedded" (the default) never triggers for Postgres, since it's never an
+            # embedded DB. The DDL is idempotent (CREATE ... IF NOT EXISTS), so re-running
+            # it on every startup is safe.
             initialize-schema: always
+    vectorstore:
+      pgvector:
+        dimensions: 768               # must match nomic-embed-text's embedding size
+        distance-type: COSINE_DISTANCE
+        index-type: NONE              # flat/exact nearest-neighbor scan; no ANN index needed at this corpus size
+        initialize-schema: true
+
+rag:
+  ingestion:
+    docs-location: rag-docs
+    chunk-size: 800
+  retrieval:
+    top-k: 4
+    similarity-threshold: 0.5

@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**M0 and M1 are complete.** The Spring Boot project is scaffolded (Java 21, Spring Boot 3.5.16, Spring AI 1.0.9) with a working `/chat` SSE streaming endpoint, JDBC-backed (H2, file-based) chat memory, and a minimal static HTML page at `/`. Current milestone: **M2** (RAG path + tenant isolation).
+**M0, M1, and M2 (both parts) are complete.** The Spring Boot project has a working `/chat` SSE streaming endpoint with JDBC-backed chat memory, a minimal static HTML page at `/`, and tenant-scoped RAG retrieval via pgvector + `QuestionAnswerAdvisor`. `POST`/`DELETE /ingest/{tenantId}` manage per-tenant chunks in pgvector, idempotently. Two tenants (`acme`, `globex`) have distinct sample docs under `rag-docs/`. A `RagEvalTest` integration test scores retrieval precision@k and asserts cross-tenant isolation. Chat memory and the vector store share one Postgres instance (see Architecture below for why), and chat memory is itself tenant-namespaced (see "Tenant isolation" below) — not just the vector store. Current milestone: **M3** (MCP path).
 
 ## Commands
 
-- Run: `./mvnw spring-boot:run` — starts on `http://localhost:8080`, requires Ollama running locally with `llama3.1` and `nomic-embed-text` pulled.
+- Run: `docker compose up -d && ./mvnw spring-boot:run` — starts on `http://localhost:8080`. Requires Ollama running locally with `llama3.1:8b` and `nomic-embed-text` pulled, and Docker (Postgres + pgvector) up.
 - Compile only: `./mvnw compile`
-- Test: `./mvnw test` (no tests exist yet as of M1)
+- Test: `./mvnw test` — currently just `RagEvalTest`, an integration test requiring the live stack (Postgres + Ollama); it ingests both tenants itself. Run in isolation with `./mvnw test -Dtest=RagEvalTest`.
 
 ## Source of truth
 
@@ -71,13 +71,19 @@ User (browser chat)  ──►  /chat  ──►  Guardrail pre-check ──► 
 
 ### Stack
 - Java 21, Spring Boot 3.x, Spring AI 1.0.x
-- Ollama: a chat model (e.g. `llama3.1` or `qwen2.5`) + an embedding model (e.g. `nomic-embed-text`)
+- Ollama: chat model `llama3.1:8b` + embedding model `nomic-embed-text`
 - Postgres + pgvector (`spring-ai-pgvector-store` starter)
 - Chat memory: JDBC-backed `ChatMemory` (survives restarts)
 - UI: single static HTML page hitting `/chat` over SSE — no frontend framework
 
+### Environment
+Mac Mini M4, 16GB RAM, no memory constraints — `llama3.1:8b`, Postgres in Docker, the Spring Boot JVM, and the IDE can all run at once without issue. Postgres runs via Docker for portability (`docker-compose.yml` at repo root); start with `docker compose up -d` before running the app. Required from M2 onward — both chat memory and the pgvector store depend on it (M1's standalone H2 chat memory was replaced, see Architecture below).
+
 ### Config externalization
-All RAG tuning knobs (chunk size, chunk overlap, top-K, similarity threshold, embedding model name) belong in `application.yml`, never hardcoded. "Tuning" must never mean "recompile."
+All RAG tuning knobs (chunk size, top-K, similarity threshold, embedding model name) belong in `application.yml`, never hardcoded. "Tuning" must never mean "recompile." Note: Spring AI 1.0.9's `TokenTextSplitter` has no chunk-overlap parameter (chunks are back-to-back, not sliding-window) — "chunk overlap" from the original plan isn't a real knob in this library version, so it's not implemented.
+
+### Datastore consolidation (M2)
+`PgVectorStoreAutoConfiguration` binds to Spring Boot's single primary `DataSource` — it has no independent connection config. Introducing pgvector therefore moved M1's JDBC chat memory off its standalone H2 file database onto the same Postgres instance (no way to keep two datastores without manually wiring a second `DataSource` for no real benefit). This is a net simplification: Postgres is a first-class supported dialect for Spring AI's JDBC chat memory, unlike H2 which needed a schema-borrowing workaround in M1. Consequence: the app now requires `docker compose up -d` (Postgres) to start at all.
 
 ### Example routing scenarios
 See `PLAN.md` Section 6 for the full list. One per path, for calibration when building the router/guardrails (M4):
@@ -88,12 +94,16 @@ See `PLAN.md` Section 6 for the full list. One per path, for calibration when bu
 
 ## Ingestion design (the extensibility seam)
 
-**Entry point:** `IngestionService.ingest(tenantId, source)` — this signature is what keeps future flexibility; onboarding a tenant later means calling this with a new tenant + source, not writing new code.
+**Current state:** `IngestionService.ingest(tenantId)` reads every file directly under `rag-docs/<tenantId>/` (folder-name = tenant convention), splits with `TokenTextSplitter`, embeds, and upserts into pgvector with `tenantId` stamped into each chunk's metadata. `IngestionService.deleteTenant(tenantId)` removes only that tenant's chunks via `vectorStore.delete(Filter.Expression)`. Exposed via `POST`/`DELETE /ingest/{tenantId}`; `POST /ingest/{tenantId}` 404s if that tenant's folder doesn't exist. Idempotent: deterministic chunk id = `UUID.nameUUIDFromBytes(tenantId + "#" + relativeSourcePath + "#" + chunkIndex)`, relying on `PgVectorStore.add()`'s `ON CONFLICT (id) DO UPDATE`.
 
-- `POST /ingest/{tenantId}` → scans `rag-docs/<tenantId>/`, chunks, embeds, upserts every chunk tagged with `tenantId`. Idempotent (re-running picks up new/changed files, no duplicates).
-- `DELETE /ingest/{tenantId}` → removes all chunks for that tenant. **`tenantId` is required** — there is no delete-everything call.
-- **Idempotency:** deterministic chunk id = `hash(tenantId + relative source path + chunk index)`, upsert semantics.
 - **Provisioning is data, not schema:** shared vector store, `tenantId` as metadata — no new table/migration per tenant.
+
+## Tenant isolation (M2 part 2)
+
+- **Retrieval:** `ChatController` builds a fresh `QuestionAnswerAdvisor` per `/chat` request (not a shared `defaultAdvisor`), with `SearchRequest.filterExpression` set to `FilterExpressionBuilder().eq("tenantId", tenantId)` where `tenantId` comes from the required `X-Tenant-Id` header. Built as an AST object directly from a trusted server-side value, never as filter text — `QuestionAnswerAdvisor`'s string-based filter-override path (`qa_filter_expression` context key) is never populated by this code, so it's not a reachable bypass. pgvector ANDs the filter directly into the SQL `WHERE` clause (not a post-filter), so the database itself never returns another tenant's rows. 
+- **Not covered:** there is no authentication yet verifying a caller may claim a given `X-Tenant-Id` — that's an authz gap for M4, not a filter-bypass bug.
+- **Chat memory:** namespaced by tenant too, not just `conversationId`. The actual `ChatMemory.CONVERSATION_ID` used is `UUID.nameUUIDFromBytes(tenantId + "::" + conversationId)` (`conversationId` alone is a client-chosen browser-tab UUID, and without this, reusing the same `conversationId` under two tenants would read/write the same memory row — a leak the vector-store filter doesn't touch). Hashed into a UUID rather than stored as the literal concatenation because `SPRING_AI_CHAT_MEMORY.conversation_id` is `VARCHAR(36)` (sized for a raw UUID by Spring AI's shipped schema) — plain concatenation overflowed it in production as soon as a real question hit it (`DataIntegrityViolationException: value too long for type character varying(36)`). Verified directly (same `conversationId`, tenant switched acme→globex→acme): zero bleed-through either direction, memory intact within a tenant.
+- **Eval harness** (`RagEvalTest`) asserts both: every retrieved doc's `tenantId` metadata matches the requesting tenant for every eval case, plus a dedicated test that the same query under two tenants returns disjoint chunk-id sets.
 
 Documented-but-not-built future work (belongs in README's "future work" section, not in code): API-driven ingestion (`POST /tenants/{id}/documents`), source connectors (S3/Drive/Confluence), incremental event-driven (CDC/outbox) sync.
 
