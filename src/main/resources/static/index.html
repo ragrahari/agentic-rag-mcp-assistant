@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Agentic RAG + MCP Assistant</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  #log { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; min-height: 300px; white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 1rem; }
+  .msg { margin-bottom: 1rem; }
+  .msg .role { font-weight: bold; }
+  form { display: flex; gap: 0.5rem; }
+  input[type=text] { flex: 1; padding: 0.5rem; font-size: 1rem; }
+  button { padding: 0.5rem 1rem; font-size: 1rem; }
+</style>
+</head>
+<body>
+<h1>Agentic RAG + MCP Assistant</h1>
+<div id="log"></div>
+<form id="chat-form">
+  <input type="text" id="message" placeholder="Ask something..." autocomplete="off" autofocus>
+  <button type="submit">Send</button>
+</form>
+
+<script>
+  const conversationId = crypto.randomUUID();
+  const log = document.getElementById('log');
+  const form = document.getElementById('chat-form');
+  const input = document.getElementById('message');
+
+  function appendMessage(role) {
+    const div = document.createElement('div');
+    div.className = 'msg';
+    const roleSpan = document.createElement('span');
+    roleSpan.className = 'role';
+    roleSpan.textContent = role + ': ';
+    const textSpan = document.createElement('span');
+    div.appendChild(roleSpan);
+    div.appendChild(textSpan);
+    log.appendChild(div);
+    return textSpan;
+  }
+
+  async function sendMessage(message) {
+    appendMessage('You').textContent = message;
+    const responseSpan = appendMessage('Assistant');
+
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, conversationId })
+    });
+
+    if (!res.ok || !res.body) {
+      responseSpan.textContent = '[error: ' + res.status + ']';
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let eventEnd;
+      while ((eventEnd = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, eventEnd);
+        buffer = buffer.slice(eventEnd + 2);
+
+        // Spring's Flux<String> SSE writer emits "data:<content>" with no separator space,
+        // so the token's own leading space (common with word-piece tokenization) must be
+        // kept as-is — do not strip it.
+        const dataLines = rawEvent
+          .split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5));
+
+        if (dataLines.length > 0) {
+          responseSpan.textContent += dataLines.join('\n');
+        }
+      }
+    }
+  }
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    sendMessage(message);
+  });
+</script>
+</body>
+</html>

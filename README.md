@@ -9,9 +9,10 @@ See `PLAN.md` for the full architecture, locked scope decisions, and milestone p
 
 ## Status
 
-**M0 — repo + skeleton.** Spring Boot project scaffolded with a single `/health` endpoint. The
-chat endpoint, RAG path, MCP path, router, and guardrails land in later milestones (see `PLAN.md`
-Section 5).
+**M1 — streaming chat with persistent memory.** `POST /chat` streams token-by-token responses
+from Ollama over SSE, with JDBC-backed (H2, file-based) chat memory that survives app restarts,
+and a minimal browser UI at `/`. The RAG path, MCP path, router, and guardrails land in later
+milestones (see `PLAN.md` Section 5).
 
 ## Stack
 
@@ -37,6 +38,23 @@ The app starts on `http://localhost:8080`. Verify with:
 ```
 curl http://localhost:8080/health
 ```
+
+Open `http://localhost:8080` in a browser for a minimal chat UI, or call the streaming endpoint
+directly:
+```
+curl -N -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Hello, who are you?","conversationId":"demo"}'
+```
+`conversationId` is optional (defaults to a single implicit conversation); pass a stable value to
+keep multi-turn context, including across an app restart — chat memory is stored in a local,
+file-based H2 database (`./data/chatmemory.mv.db`, gitignored).
+
+**Implementation note:** Spring AI 1.0.9's JDBC chat-memory module ships schema scripts for
+Postgres/MySQL/SQL Server/HSQLDB but not H2; its dialect auto-detection also falls back to the
+Postgres dialect for H2. Since that dialect's SQL is plain ANSI and H2-compatible, `application.yml`
+points schema initialization at the bundled Postgres script (`spring.ai.chat.memory.repository.jdbc.platform: postgresql`)
+rather than hand-writing a duplicate schema file.
 
 ## Future work
 

@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repo currently contains only planning artifacts (`PLAN.md`, `README.md`) — no Spring Boot project has been scaffolded yet (no `pom.xml`/`mvnw`, no `src/`). The first work in this repo is milestone **M0** below. Once the project is scaffolded, update this file with the real build/lint/test commands (`./mvnw spring-boot:run`, `./mvnw test`, etc.) and remove this note.
+**M0 and M1 are complete.** The Spring Boot project is scaffolded (Java 21, Spring Boot 3.5.16, Spring AI 1.0.9) with a working `/chat` SSE streaming endpoint, JDBC-backed (H2, file-based) chat memory, and a minimal static HTML page at `/`. Current milestone: **M2** (RAG path + tenant isolation).
+
+## Commands
+
+- Run: `./mvnw spring-boot:run` — starts on `http://localhost:8080`, requires Ollama running locally with `llama3.1` and `nomic-embed-text` pulled.
+- Compile only: `./mvnw compile`
+- Test: `./mvnw test` (no tests exist yet as of M1)
 
 ## Source of truth
 
