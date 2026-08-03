@@ -61,14 +61,19 @@ User (browser chat)  ──►  /chat  ──►  Guardrail pre-check ──► 
 
 ### Stack
 - Java 21, Spring Boot 3.x, Spring AI 1.0.x
-- Ollama: a chat model (e.g. `llama3.1` or `qwen2.5`) + an embedding model (e.g. `nomic-embed-text`)
+- Ollama: chat model `llama3.1:8b` + embedding model `nomic-embed-text`
 - Postgres + pgvector (`spring-ai-pgvector-store` starter)
-- Chat memory: JDBC-backed `ChatMemory` (survives restarts)
+- Chat memory: JDBC-backed `ChatMemory`
 - UI: single static HTML page hitting `/chat` over SSE. No frontend framework.
+
+### Stack versions (LOCKED — do not drift to 2.0)
 - Spring Boot 3.5.16 + Spring AI 1.0.9. Chosen over the Boot 4 / Spring AI 2.0 pairing deliberately: this is a portfolio project where ecosystem maturity (docs, examples, troubleshooting) matters more than the newest API. 1.0.x has full RAG support (Advisor framework, VectorStore abstraction) and MCP via community starters — everything the plan needs. Boot 3.5 is past EOL (June 30, 2026), which is irrelevant for a local, non-exposed portfolio project. A production deployment would target Boot 4 / Spring AI 2.0; this migration path is noted in the README.
 
+### Environment
+Mac Mini M4, 16GB RAM. No memory constraints. Run `llama3.1:8b` as the chat model, Postgres in Docker, Spring Boot JVM, and IDE all at once without issue. Run Postgres in Docker for portability; start with `docker compose up` and leave it running while working.
+
 ### Config externalization
-All RAG tuning knobs live in `application.yml`, never hardcoded: chunk size, chunk overlap, top-K, similarity threshold, embedding model name. "Tuning" must never mean "recompile."
+RAG tuning knobs live in `application.yml`, never hardcoded: chunk size, top-K, similarity threshold, embedding model name. "Tuning" must never mean "recompile." (Note: chunk *overlap* is not a knob — Spring AI 1.0.9's `TokenTextSplitter` has no overlap parameter; adding it would require a custom `TextSplitter`, deferred unless M6 eval shows boundary-splitting hurts precision.)
 
 ---
 
@@ -104,29 +109,37 @@ All RAG tuning knobs live in `application.yml`, never hardcoded: chunk size, chu
 - **Validate:** multi-turn conversation in the browser where turn 2 remembers turn 1; response streams token by token.
 
 ### M2 — RAG path + tenant isolation + minimal eval
-- Ingestion (`ingest(tenantId, source)`, folder-per-tenant, idempotent upsert), pgvector, `QuestionAnswerAdvisor`, tenant-scoped retrieval, config-externalized tuning knobs, `POST`/`DELETE /ingest/{tenantId}`, ~5 Q&A eval pairs scoring precision@k.
+- Ingestion (`ingest(tenantId, source)`, folder-per-tenant, idempotent upsert), pgvector (**cosine distance, 768 dims to match nomic-embed-text, flat/exact index for this corpus size**), `QuestionAnswerAdvisor`, tenant-scoped retrieval, config-externalized tuning knobs, `POST`/`DELETE /ingest/{tenantId}`, ~5 Q&A eval pairs scoring precision@k.
 - **Validate:**
   - A question answerable only from ingested docs returns a grounded answer citing the right chunk.
   - **Cross-tenant isolation test:** Tenant A's query retrieves only Tenant A's chunks; a deliberate attempt to reach Tenant B's data returns nothing.
   - Eval harness prints a precision@k number.
   - `DELETE /ingest/{tenant}` removes that tenant's data; re-ingest restores it.
-- **Flip repo to public here** (once `main` runs clean and isolation holds).
+- **Flip repo to public here** (once `main` runs clean, isolation holds, and the README claims match actual behavior).
+- **Known limitation carried into M4:** retrieval and memory are tenant-isolated at the *data* layer, but the *generation* step will still narrate about another named tenant using in-tenant data if the prompt invites it (e.g. an acme caller asking "what is globex's spend limit" gets acme's figure mislabeled as globex's — no data crosses tenants, but the narration does). Input-level guarding of cross-tenant *requests* is deferred to M4.
 
 ### M3 — MCP path
-- One custom MCP server exposing a single simple mocked tool (e.g. card balance or transaction status), Spring AI MCP client wiring, timeout/failure policy.
+- One custom MCP server exposing a single simple mocked tool (e.g. card balance or transaction status), Spring AI MCP client wiring, timeout/failure policy. Mock behind a real service interface (fake impl) so swapping in a real service is a one-class change.
 - **Validate:** a request needing live tool data returns it; killing the MCP server mid-request degrades gracefully (no crash).
 
 ### M4 — Router + guardrails + observability
 - Structured-output path router (`RAG`/`MCP`/`BOTH`/`DENY` with reason), guardrail pre-check (policy, prompt-injection, cross-tenant access), logging of routing decision + retrieved context (ids + tenant) + final prompt.
-- **Validate:** four test prompts (one per path) route correctly; a policy-violating prompt and a cross-tenant prompt are each denied with a reason; logs show the decision trail per request.
+- **Validate:** four test prompts (one per path) route correctly; logs show the decision trail per request. Guardrail denials, each with a reason:
+  - A policy-violating prompt is denied.
+  - A prompt-injection attempt is denied.
+  - **A cross-tenant request is denied** — including the M2 case: an in-tenant caller (acme) asking about another named tenant ("what is globex's spend limit"). Use that exact prompt as the concrete test; pre-guardrail it mislabels acme's data as globex's, post-guardrail it is refused with a reason.
+- **Tenant authorization gap (from M2) closes here:** today any caller can claim any `X-Tenant-Id`. Authenticating that a caller is entitled to a tenant is guardrail/auth work and lands in this milestone.
 
 ### M5 — BOTH path + merge
 - Run RAG + MCP, merge context, generate; degrade to single-path on failure.
 - **Validate:** a prompt needing both sources produces an answer visibly using both; disabling one source still answers from the other.
 
 ### M6 — RAG tuning pass
-- Sweep chunk size / overlap / top-K / threshold / embedding model against the eval set; add hybrid retrieval (vector + Postgres full-text, merged/re-ranked); document tradeoffs.
-- **Validate:** a before/after precision@k comparison table committed to the repo.
+- Sweep chunk size / top-K / similarity threshold / embedding model against the eval set; document tradeoffs. (Chunk overlap is not a sweepable knob on this stack — see Config externalization; revisit only if boundary-splitting shows up in eval, via a custom splitter.)
+- **Re-ranking (two-stage retrieval):** retrieve a broad candidate set by vector similarity, then re-score to pick the final top-K that enter the prompt. Approach: LLM-as-re-ranker using the existing `llama3.1` (prompt it to score candidate passages for relevance). Chosen because it fits the Java/Ollama stack with no new dependencies; a cross-encoder (e.g. Cohere Rerank or a local HF model) is more accurate but requires standing up a separate service — out of scope. Measure precision@k with re-ranking vs without.
+- **Hybrid retrieval:** vector + Postgres full-text, merged with Reciprocal Rank Fusion (RRF). Note: RRF is rank *fusion* of two result lists, a distinct mechanism from the re-ranking stage above — keep them separate.
+- **Similarity threshold interaction:** the threshold's meaning depends on the distance metric (cosine, set at M2, so the threshold is stable) and the embedding model — re-tune it if the model changes. With re-ranking present, loosen/drop the vector-stage threshold so candidates aren't discarded before the re-ranker can rescue them; the re-ranker score becomes the real quality gate. Document this interaction.
+- **Validate:** a before/after precision@k comparison table committed to the repo (baseline vs tuned, and no-reranking vs reranking).
 
 ---
 
@@ -168,5 +181,6 @@ Framing: a Navan-style business-travel fintech; corporate customers are tenants 
 
 - Real README: what it does, architecture diagram, why the key decisions were made, how to run it, and a "future work" section (the ingestion maturity curve, hybrid retrieval, soft multi-tenant weighting).
 - **README framing:** state outcomes as capability — what the system does and what was built. Never frame it as a learning/practice project ("built to learn X"). That undersells the work and reads as a toy.
+- **README claims must match behavior.** Tenant isolation claims are precise: retrieval and memory are isolated at the data layer; cross-tenant *request* guarding and tenant *authentication* are deferred to M4 and stated as such. No blanket "never leaks" claim while the M2 narration gap and auth gap are open.
 - Secrets never committed; `.gitignore` covers `.env`, local config, keys.
 - The eval harness (M2) and the tuning comparison table (M6) are first-class deliverables — they are the strongest "I tuned retrieval and can show the tradeoffs" talking points.
