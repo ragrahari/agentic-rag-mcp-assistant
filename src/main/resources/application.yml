@@ -30,6 +30,29 @@ spring:
         distance-type: COSINE_DISTANCE
         index-type: NONE              # flat/exact nearest-neighbor scan; no ANN index needed at this corpus size
         initialize-schema: true
+    mcp:
+      client:
+        name: agentic-rag-mcp-assistant
+        # Bounded, not a hang: if the card server is slow/unreachable, a tool call fails
+        # clearly within 5s instead of the 20s default.
+        request-timeout: 5s
+        initialized: false
+        toolcallback:
+          # Disables Spring AI's auto-registered ToolCallbackProvider bean. Its mere
+          # presence in the context makes an unrelated bean --
+          # ToolCallingAutoConfiguration's toolCallbackResolver, built while wiring the
+          # Ollama chat model -- eagerly call getToolCallbacks() (a live list_tools) at
+          # app startup, regardless of @Lazy on any of *our* injection points. Proven via
+          # a cold-start test with the card server down: app failed to start entirely
+          # with "Client failed to initialize listing tools" several frames deep in
+          # OllamaChatAutoConfiguration -> ToolCallingAutoConfiguration.
+          # ChatController builds its own SyncMcpToolCallbackProvider per request instead
+          # (inside a try/catch), from the McpSyncClient list directly.
+          enabled: false
+        sse:
+          connections:
+            card-server:
+              url: http://localhost:8081
 
 rag:
   ingestion:

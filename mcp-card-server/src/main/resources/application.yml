@@ -1,0 +1,28 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: mcp-card-server
+  datasource:
+    # Same Postgres instance as the main app (see docker-compose.yml), different tables
+    # (accounts/transactions) -- ordinary relational data, no embeddings, no pgvector.
+    url: jdbc:postgresql://localhost:5432/ragdb
+    username: raguser
+    password: ragpass
+    driver-class-name: org.postgresql.Driver
+  sql:
+    init:
+      # Default "embedded" mode never triggers for Postgres. schema.sql is idempotent
+      # (CREATE ... IF NOT EXISTS) and data.sql uses ON CONFLICT DO NOTHING, so running
+      # both on every startup is safe.
+      mode: always
+  ai:
+    mcp:
+      server:
+        name: card-server
+        version: 0.0.1
+        type: SYNC
+        # WebMvc SSE transport (spring-ai-starter-mcp-server-webmvc on the classpath) is
+        # used automatically since stdio is not enabled below.
+        stdio: false
