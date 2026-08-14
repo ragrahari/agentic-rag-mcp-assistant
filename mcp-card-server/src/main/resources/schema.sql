@@ -16,3 +16,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     status     VARCHAR(20)    NOT NULL,
     PRIMARY KEY (id, tenant_id)
 );
+
+-- Same physical table as the main app's src/main/resources/schema.sql -- both
+-- processes share one Postgres instance, either may start first, so both defensively
+-- CREATE TABLE IF NOT EXISTS. This is the single authoritative tenant registry the main
+-- app's /chat guardrail reads (M4 part 1).
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id  VARCHAR(64) PRIMARY KEY,
+    status     VARCHAR(10) NOT NULL CHECK (status IN ('ACTIVE', 'INACTIVE')),
+    created_at TIMESTAMP   NOT NULL DEFAULT now()
+);

@@ -7,6 +7,13 @@ spring:
     username: raguser
     password: ragpass
     driver-class-name: org.postgresql.Driver
+  sql:
+    init:
+      # Default "embedded" mode never triggers for Postgres. Runs schema.sql (tenants
+      # table, CREATE ... IF NOT EXISTS) on every startup; safe to repeat. Independent of
+      # Spring AI's own script-based initializers for the vector store and chat memory
+      # below, which manage their own tables.
+      mode: always
   ai:
     ollama:
       base-url: http://localhost:11434

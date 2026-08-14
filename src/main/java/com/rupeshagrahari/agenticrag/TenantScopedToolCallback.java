@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -37,14 +39,19 @@ public class TenantScopedToolCallback implements ToolCallback {
 
     private static final String TENANT_ID_PROPERTY = "tenantId";
 
+    private static final Logger log = LoggerFactory.getLogger(TenantScopedToolCallback.class);
+
     private final ToolCallback delegate;
     private final String tenantId;
     private final ObjectMapper objectMapper;
+    private final String correlationId;
 
-    public TenantScopedToolCallback(ToolCallback delegate, String tenantId, ObjectMapper objectMapper) {
+    public TenantScopedToolCallback(ToolCallback delegate, String tenantId, ObjectMapper objectMapper,
+            String correlationId) {
         this.delegate = delegate;
         this.tenantId = tenantId;
         this.objectMapper = objectMapper;
+        this.correlationId = correlationId;
     }
 
     @Override
@@ -59,16 +66,33 @@ public class TenantScopedToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput) {
+        String toolName = delegate.getToolDefinition().name();
         try {
             Map<String, Object> arguments = StringUtils.hasText(toolInput)
                     ? objectMapper.readValue(toolInput, new TypeReference<Map<String, Object>>() {
                     })
                     : new HashMap<>();
             arguments.put(TENANT_ID_PROPERTY, tenantId);
-            return delegate.call(objectMapper.writeValueAsString(arguments));
+            String argumentsJson = objectMapper.writeValueAsString(arguments);
+
+            // Arguments include tenantId deliberately -- it's the trusted, server-forced
+            // value above, not model input, so logging it is exactly what confirms this
+            // call was tenant-scoped. No other argument on this tool is sensitive.
+            log.info("event=tool_call_start correlationId={} tenantId={} tool={} arguments={}", correlationId,
+                    tenantId, toolName, argumentsJson);
+
+            String result = delegate.call(argumentsJson);
+            log.info("event=tool_call_outcome correlationId={} tenantId={} tool={} outcome={}", correlationId,
+                    tenantId, toolName, "SUCCESS");
+            return result;
         }
         catch (Exception e) {
-            return "{\"error\":\"The " + delegate.getToolDefinition().name()
+            // Covers connection failure, the 5s request-timeout, and protocol errors
+            // alike -- the exception class name is logged so a timeout is distinguishable
+            // from other failure modes without bespoke detection logic here.
+            log.warn("event=tool_call_outcome correlationId={} tenantId={} tool={} outcome={} error={}",
+                    correlationId, tenantId, toolName, "FAILURE", e.getClass().getSimpleName() + ": " + e.getMessage());
+            return "{\"error\":\"The " + toolName
                     + " service is currently unavailable. Let the user know their request could not be completed "
                     + "right now and they should try again shortly.\"}";
         }

@@ -26,10 +26,13 @@ public class IngestionService {
 
     private final VectorStore vectorStore;
     private final RagProperties ragProperties;
+    private final TenantRegistryService tenantRegistryService;
 
-    public IngestionService(VectorStore vectorStore, RagProperties ragProperties) {
+    public IngestionService(VectorStore vectorStore, RagProperties ragProperties,
+            TenantRegistryService tenantRegistryService) {
         this.vectorStore = vectorStore;
         this.ragProperties = ragProperties;
+        this.tenantRegistryService = tenantRegistryService;
     }
 
     public int ingest(String tenantId) {
@@ -63,6 +66,12 @@ public class IngestionService {
             vectorStore.add(chunksWithDeterministicIds);
             totalChunks += chunksWithDeterministicIds.size();
         }
+
+        // Register-on-write: this path just created tenant-scoped data, so the tenant
+        // must be a known, ACTIVE row in the registry the /chat guardrail checks. Runs
+        // after a successful ingest only -- the 404 above (no docs folder) returns before
+        // this point, so a nonexistent tenant is never registered.
+        tenantRegistryService.registerActive(tenantId);
         return totalChunks;
     }
 

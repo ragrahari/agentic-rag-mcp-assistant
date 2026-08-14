@@ -14,3 +14,13 @@ INSERT INTO transactions (id, tenant_id, account_id, amount, merchant, txn_date,
     ('TXN-9101', 'globex', 'CARD-1001', 1200.00, 'Marriott Hotels',  '2026-07-30', 'POSTED'),
     ('TXN-9102', 'globex', 'CARD-2001',  64.25, 'Uber',              '2026-08-02', 'POSTED')
 ON CONFLICT (id, tenant_id) DO NOTHING;
+
+-- Registers acme/globex as ACTIVE tenants alongside their account/transaction seed data
+-- (M4 part 1). ON CONFLICT DO UPDATE (not DO NOTHING) so restarting this server
+-- reactivates a tenant that was deprovisioned via the main app -- consistent with
+-- register-on-write always meaning ACTIVE. created_at is left untouched on conflict
+-- since it's omitted from the SET clause.
+INSERT INTO tenants (tenant_id, status) VALUES
+    ('acme', 'ACTIVE'),
+    ('globex', 'ACTIVE')
+ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';
