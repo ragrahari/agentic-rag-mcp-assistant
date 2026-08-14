@@ -9,16 +9,27 @@ See `PLAN.md` for the full architecture, locked scope decisions, and milestone p
 
 ## Status
 
-**M3 complete — MCP path (live tool data), on top of M2's RAG + tenant isolation.**
-`POST /chat` can now call a live tool: a standalone MCP server (`mcp-card-server/`, its own
-Spring Boot process) exposes `getCardBalance`, backed by real Postgres tables (`accounts`,
-`transactions` — plain relational data, not embeddings). The main app's Spring AI MCP client
-discovers and invokes it over HTTP+SSE, tenant-scoped the same way RAG retrieval is, with a
-bounded timeout and no crash if the tool server is slow, down at boot, or killed mid-conversation.
-There's no router yet — the model decides for itself whether to call the tool, same as any
-Spring AI tool-calling; intelligent RAG-vs-MCP routing is M4. Two tenants (`acme`, `globex`) still
-demonstrate isolation, now for both the RAG and MCP paths. See "MCP path" below for the full
-design writeup. Guardrails and the router land in M4.
+**M4 complete — router, guardrails, and full request-trace observability, on top of M1–M3's
+chat/RAG/MCP foundation.**
+Every `/chat` request now passes through two deterministic guardrails before any LLM call: a
+tenant-registry check (unknown or deprovisioned tenants denied via a single indexed lookup) and a
+cross-tenant-reference check (denies a message that names a *different* known tenant by name).
+The second one closes a gap carried since M2: retrieval was always tenant-scoped, but the model
+could still narrate about another named tenant using the caller's own data if the prompt invited
+it (e.g. an acme caller asking "what is globex's spend limit" got acme's figure mislabeled as
+globex's) — that's now refused before generation starts, not policed after the fact. Past the
+guardrails, a separate, focused LLM call (the router) classifies each message into
+RAG/MCP/BOTH/DENY and attaches *only* the matching capabilities to the actual generation call —
+this is what fixes M3's "model doesn't always call the tool" ambiguity, since an MCP-only request
+no longer has a distracting RAG chunk sitting in its prompt. The router's own DENY is a
+quality/off-topic refusal (a normal 200 response, not an HTTP error) — a different, unrelated code
+path from the guardrails' security denials (403s). Every request is traceable end to end via a
+correlation id; see "Observability" below.
+
+**Still open, documented honestly, not silently dropped:** tenant *authentication* (verifying a
+caller is actually entitled to the `X-Tenant-Id` they claim) and prompt-injection guarding of user
+content are both deferred — see `PLAN.md`'s M4 "Known shortcomings" section for the full list and
+rationale.
 
 ## Stack
 
@@ -135,16 +146,19 @@ stating exactly rather than as a blanket claim:
 - **Chat memory is tenant-namespaced** (see implementation notes), so conversation history can't
   bleed across tenants even when two requests reuse the same `conversationId`.
 
-**Deferred to M4 (guardrails), stated honestly:**
+**Closed in M4, and one gap still open — stated honestly:**
 
+- **Cross-tenant narration is now blocked.** The gap that used to live here — an `acme` caller
+  asking "what is globex's spend limit" getting acme's figure mislabeled as globex's — is closed
+  by a deterministic guardrail: any message naming a *different* known tenant is denied (403,
+  generic reason) before the router or any LLM call runs. No data ever crossed tenants even before
+  this — the retrieved chunk was always acme's own — but the misleading narration is now refused
+  outright instead of merely being possible to produce.
 - **No tenant authentication yet.** Nothing verifies a caller is entitled to the `X-Tenant-Id` they
-  send — any caller can claim any tenant today. This is an authorization gap, not a filter-bypass
-  bug, and it closes in M4.
-- **The generation step can still narrate about another named tenant using in-tenant data.** If an
-  `acme` caller asks "what is globex's spend limit," retrieval correctly returns *acme's* chunks,
-  but the model may attach acme's figure to the "globex" label the prompt introduced. No data
-  crosses tenants — the retrieved chunk is acme's own — but the narration is misleading. Guarding
-  cross-tenant *requests* at the input layer is M4 work.
+  send — any caller can still claim any tenant. This is an authorization gap, not a filter-bypass
+  bug. It did **not** close in M4 as originally planned — the M4 guardrails check tenant
+  existence, status, and message content, never caller identity. Still open; documented in
+  `PLAN.md`'s M4 "Known shortcomings" section.
 
 ## MCP path
 
@@ -218,8 +232,37 @@ card program guide, for a balance question), its prompt template's strict "answe
 provided context" framing sometimes leads the model to decline to call the tool at all, even
 though the tool was correctly offered and would have worked — it did in other, more clear-cut
 runs of the identical question. This is precisely the ambiguity M4's structured-output router
-exists to resolve; M3's job was only to prove the tool *can* be called correctly and safely when
+resolves, by attaching MCP tools without a competing RAG advisor for MCP-only requests (see
+"Status" above) — M3's job was only to prove the tool *can* be called correctly and safely when
 invoked, which it repeatedly was.
+
+## Observability
+
+Every `/chat` request is traceable end to end via a single correlation id (a UUID generated per
+request), threaded explicitly as a method parameter through the guardrail checks, the router,
+retrieval, and any tool call — not via a thread-local (`MDC`), since the actual generation call's
+advisor chain runs on a different thread (Reactor's `boundedElastic` scheduler) than the servlet
+thread that handled the guardrails and router, and a thread-local wouldn't reliably survive that
+handoff. Structured (`key=value`, not string concatenation) logs at INFO capture the full decision
+trail:
+
+- **Guardrail outcomes** — which check ran (`tenant_active` / `cross_tenant_reference`), allowed
+  or denied, and why.
+- **Router decision** — the chosen path (RAG/MCP/BOTH/DENY) and the router's own one-sentence
+  reason.
+- **Capabilities attached** — which advisors/tools were actually attached, based on the router's
+  decision.
+- **Retrieval details** (when RAG ran) — retrieved chunk ids, their `tenantId`, source file, and
+  similarity score, so tenant-scoping is verifiable straight from the log, without enabling
+  verbose logging.
+- **Tool calls** (when MCP ran) — which tool, its arguments (tenant included), and
+  success/failure/timeout outcome.
+
+Full chunk text and the exact final prompt sent to the model are logged too, but gated behind
+DEBUG — verbose by design, off by default (`--logging.level.com.rupeshagrahari.agenticrag=DEBUG`
+to enable). Filtering a log by one correlation id greps out that single request's complete trail
+from an otherwise-interleaved log, so when an answer is wrong, it's possible to tell whether it
+was a guardrail decision, a routing choice, retrieval, or generation.
 
 ## Implementation notes
 

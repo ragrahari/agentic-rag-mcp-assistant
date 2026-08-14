@@ -54,7 +54,20 @@
     });
 
     if (!res.ok || !res.body) {
-      responseSpan.textContent = '[error: ' + res.status + ']';
+      // The guardrail (and other server-side denials) respond with a JSON body of the
+      // form {status, error, reason} -- see ApiExceptionHandler. Fall back to a generic
+      // message if the body isn't that shape (e.g. a non-JSON 5xx from somewhere else).
+      let reason = `Request failed (${res.status})`;
+      try {
+        const errorBody = await res.json();
+        if (errorBody && errorBody.reason) {
+          reason = errorBody.reason;
+        }
+      }
+      catch (e) {
+        // Body wasn't JSON; keep the generic fallback above.
+      }
+      responseSpan.textContent = reason;
       return;
     }
 
